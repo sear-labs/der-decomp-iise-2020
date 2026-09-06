@@ -1,0 +1,1153 @@
+---
+title: "Utlity Linking Model"
+output: html_notebook
+---
+
+All models are Mixed Integer Programs that are coded and ran with Gurobi 8.1.1
+
+```{r}
+library(gurobi)
+library(tictoc)
+library(Matrix)
+#library(FinCal)
+library(readxl)
+library(tidyverse)
+```
+
+These R codes bring in capacity factors for wind and solar from ERCOT and Pecan Street respectively. This code also brings in the demand profile data from Pecan Street as well for 30 single family homes in the Mueller neighborhood in Austin, Texas. The demand profile is given as a fraction for each time slice and will be multiplied by a demand number
+
+```{r}
+library(readxl)
+
+#These files included that are commented out are not included due to licensing requirements from Pecan Street
+#the needed required objects are in the Rdata file
+
+#load("~/Coding/R/decomp_sol_df.RData")
+
+filename <- 'indata1.xlsx'
+demand.kwh.raw <- read_excel(filename, sheet='Demand_kWh', col_names = FALSE)
+capacity.factor.raw <- read_excel(filename, sheet='CapacityFactor', col_names = FALSE)
+demand.kwh.raw1 <- as.data.frame(demand.kwh.raw[-c(1:7),-c(1:2,15:16)], stringsasfactor = FALSE, col.names = NULL)
+demand.kwh.raw1[] <- lapply(demand.kwh.raw1,function(x) as.numeric(as.character(x)))
+
+
+
+
+
+#removing values by month length
+#demand.kwh.raw1[745:nrow(demand.kwh.raw1),c(1,3,5,7,8,10,12)] <- NA
+demand.kwh.raw1[721:nrow(demand.kwh.raw1),c(4,6,9,11)] <- NA
+demand.kwh.raw1[673:nrow(demand.kwh.raw1),2] <- NA
+
+#length(which(is.na(demand.kwh.raw1)==TRUE))
+demand.kwh <- unlist(demand.kwh.raw1)
+demand.kwh <- demand.kwh[!is.na(demand.kwh)]
+demand.kwh <- demand.kwh / sum(demand.kwh)
+
+tail(demand.kwh.raw1,15)
+head(demand.kwh)
+
+rm(demand.kwh.raw,demand.kwh.raw1,filename)
+```
+
+This R Code calculates the capacity factors for solar, wind, and NG
+
+```{r}
+#Capacity factor for Solar
+
+capacity.factor.solar.raw <- as.data.frame(capacity.factor.raw[-c(1:9,745+9:nrow(capacity.factor.raw)),-c(1:2,15:19)])
+capacity.factor.solar.raw[] <- lapply(capacity.factor.solar.raw, function(x) as.numeric(as.character(x)))
+
+#capacity.factor.solar.raw[745:nrow(capacity.factor.solar.raw),c(1,3,5,7,8,10,12)] <- NA
+capacity.factor.solar.raw[721:nrow(capacity.factor.solar.raw),c(4,6,9,11)] <- NA
+capacity.factor.solar.raw[673:nrow(capacity.factor.solar.raw),2] <- NA
+ 
+ 
+#length(which(is.na(capacity.factor.solar.raw)==TRUE))
+capacity.factor.solar <- unlist(capacity.factor.solar.raw)
+capacity.factor.solar <- capacity.factor.solar[!is.na(capacity.factor.solar)]
+
+#Additional capacity factor because industrial solar panels are more efficient than household ones and then a normalization factor
+com.eff.improve <- 0.10
+capacity.factor.solar <- capacity.factor.solar + com.eff.improve
+for(i in 1:length(capacity.factor.solar)){
+  if(capacity.factor.solar[i] <=(0.009 + com.eff.improve)){
+    capacity.factor.solar[i] <- capacity.factor.solar[i] - com.eff.improve
+  }
+  if(capacity.factor.solar[i] >= 1){
+    capacity.factor.solar[i] <- capacity.factor.solar[i] - com.eff.improve
+  }
+  
+}
+
+#Capacity factor for Wind
+capacity.factor.wind.raw <- as.data.frame(capacity.factor.raw[-c(1:754),-c(1:2,15:19)])
+capacity.factor.wind.raw[] <- lapply(capacity.factor.wind.raw, function(x) as.numeric(as.character(x)))
+#capacity.factor.wind.raw[745:nrow(capacity.factor.wind.raw),c(1,3,5,7,8,10,12)] <- NA
+capacity.factor.wind.raw[721:nrow(capacity.factor.wind.raw),c(4,6,9,11)] <- NA
+capacity.factor.wind.raw[673:nrow(capacity.factor.wind.raw),2] <- NA
+#length(which(is.na(capacity.factor.wind.raw)==TRUE))
+capacity.factor.wind <- unlist(capacity.factor.wind.raw)
+capacity.factor.wind <- capacity.factor.wind[!is.na(capacity.factor.wind)]
+
+
+
+#Capacity Factor for NG
+
+capacity.factor.ng <- rep(.87,8760)
+
+
+# head(capacity.factor.raw,15)
+# head(capacity.factor.solar)
+# head(capacity.factor.wind)
+mean(capacity.factor.ng)
+mean(capacity.factor.solar)
+mean(capacity.factor.wind)
+
+
+rm(capacity.factor.raw,capacity.factor.solar.raw,capacity.factor.wind.raw,i,com.eff.improve)
+
+```
+
+This code codes the A variables of the constraints. C1 creates the equation Prod_ELC >= Demand*DemandProfile
+
+```{r}
+
+
+nTimePeriods <- 24*365
+Technologies <- c('NG','Solar', 'Wind')
+nTechnologies <- length(Technologies)
+
+#Matrix is defined as NG(timeperiod = 1),...NG(timeperiod = 24*365),Solar(timeperiod = 1), ..., Solar(timeperiod = 24*365), Wind(timeperiod = 1),..., Wind(timperiod = 24*365), NG(investment),Solar(investment),Wind(investment)
+#Combines all of the capacity factors multiplied by the Capacity of one unit of technolgy in one vector
+
+CF <- c(capacity.factor.ng[1:nTimePeriods]*25000,capacity.factor.solar[1:nTimePeriods]*500,capacity.factor.wind[1:nTimePeriods]*1000)
+
+C1   <- spMatrix(nTimePeriods, (nTimePeriods*nTechnologies+3),
+               i = c(rep(1:nTimePeriods,nTechnologies)),
+               j = c(1:(nTimePeriods*nTechnologies)),
+               x = c(rep(1,(nTimePeriods*nTechnologies))))
+C2a <- .sparseDiagonal((nTimePeriods*nTechnologies),1)
+C2b <- spMatrix((nTimePeriods*nTechnologies),3,
+                i = c(1:(nTimePeriods*nTechnologies)),
+                j = c(mapply(rep,(1:nTechnologies),nTimePeriods)),
+                x = c(-CF)  )
+
+C2 <- cbind(C2a,C2b)
+
+# object.size(C1)
+# object.size(C2)
+nrow(C1)
+ncol(C1)
+nrow(C2)
+ncol(C2)
+
+rm(Technologies)
+```
+
+
+The unit sizes of the natural gas combined cycle, solar, and wind power plants are set at 10 MW, 1 MW, and 1 MW respectively. The capital investments are set as integer variables and investments must be done in these increments.
+
+The R code below transforms the CAPEX cost into an annutity with a discount rate of 5% and payback period of 10 years. Since the costs are annuitized the fixed O&M is simply added to the annutized CAPEX cost giving one annual cost for all the technolgy investments given in the units $/unit.  
+
+The variable costs for each technology which includes variable O&M and fuel costs are added together and transformed into the units $/kWh.
+
+```{r}
+library(FinCal)
+
+nTimePeriods <- 8760
+cost.td <- 0.03
+discount_rate <- 0.05
+payback_period <- 20
+
+cost.df1 <- data.frame(NG = c(21,3,927,11,25,0.87), Solar = c(0,0,1096,20,0.5,0.26), Wind = c(0,0,1610,44,1,0.36))
+rownames(cost.df1) <- c('Fuel Cost $/MWh','Variable O&M $/MWh', 'CAPEX $/kW', 'Fixed O&M $/kW-yr','Capacity MW/unit','Mean Capacity Factor')
+cost.df <- cost.df1[1:4,]
+cost.df
+cost.df.print <- as.data.frame(as.matrix(t(cost.df1)))
+
+cost.annual.NG <- -(pmt(discount_rate,payback_period, pv = cost.df[3,1], fv = 0)+cost.df[4,1])*25000
+cost.annual.Solar <- -(pmt(discount_rate,payback_period, pv = cost.df[3,2], fv = 0)+cost.df[4,2])*500
+cost.annual.Wind <- -(pmt(discount_rate,payback_period, pv = cost.df[3,3], fv = 0)+cost.df[4,3])*1000
+
+cost.variable.NG <- (cost.df[1,1]+cost.df[2,1])/1000
+cost.variable.Solar <- (cost.df[1,2]+cost.df[2,2])/500
+cost.variable.Wind <- (cost.df[1,3]+cost.df[2,3])/1000
+
+cost <- c(rep(cost.variable.NG+cost.td,nTimePeriods), rep(cost.variable.Solar+cost.td,nTimePeriods), rep(cost.variable.Wind+cost.td,nTimePeriods), cost.annual.NG, cost.annual.Solar, cost.annual.Wind)
+
+
+# print(paste('Cost of 1 MWh of Solar:', format(round(cost.annual.Solar/mean(capacity.factor.solar))+cost.variable.Solar*1000,big.mark=',',scientific = FALSE)))
+# print(paste('Cost of 1 MWh of Wind:', format(round(cost.annual.Wind/mean(capacity.factor.wind))+cost.variable.Wind*1000,big.mark=',',scientific = FALSE)))
+# print(paste('Cost of 10 MWh of NG:', format(cost.annual.NG/mean(capacity.factor.ng)+cost.variable.NG*10000/mean(capacity.factor.ng),big.mark=',',scientific = FALSE)))
+
+
+
+
+```
+
+The R code below builds the model. First it calculates the RHS for the problem from a given annual demand, the demand data gathered previously, and the RHS from the capacity constraints. Then it combines the A matrix and cost data from above.
+
+```{r}
+library(gurobi)
+
+#Say 250 houses 6000 kWh a year (500 kWh/month/house), assume same for commericial ~3,000,000 kWh per community
+#40 communities for 10,000 homes 120,000 MWh of demand a year or 120,000,000 kWh
+demand.annual <- 3000000*40
+
+RHS <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+
+# Build model
+model     <- list()
+#spMatrix tells you where to put the non zero values in matrix i,j is the location and x are teh values for each pair
+model$A   <- rbind(C1,C2)
+model$obj         <- cost
+#model$lb          <- c(rep(0,(nTimePeriods*nTechnologies)),0,1,1)
+#model$ub          <- 100000
+#model$varnames <- c(paste0(rep('Open',nPlants),1:nPlants),                    sprintf('Trans%d,%d',                            c(mapply(rep,1:nWarehouses,nPlants)),                            1:nPlants))
+model$vtype    <- c(rep('C', (nTimePeriods*nTechnologies)), rep('I', 3))
+model$rhs         <- RHS
+model$sense       <- c(rep('>=',nrow(C1)),rep('<=',nrow(C2)))
+#model$constrnames <- Categories
+model$modelname   <- 'Utility Electric Generation Plan'
+model$modelsense  <- 'min'
+
+
+#Checking
+
+sum(demand.kwh)
+model.util <- model
+
+rm(RHS,C2a,C2b)
+
+```
+
+Solving the utiltity model and saving the outputs:
+
+```{r}
+
+
+sol <- gurobi(model)
+
+early <- c()
+morning <- c()
+noon <- c()
+afternoon <- c()
+night <- c()
+late <- c()
+
+for(i in 0:364){
+early <- c(early,c(1,2,3,4)+i*24) 
+morning <- c(morning,c(5,6,7,8)+i*24)
+noon <- c(noon,c(9,10,11,12)+i*24)
+afternoon <- c(afternoon,c(13,14,15,16)+i*24)
+night <- c(night,c(17,18,19,20)+i*24)
+late <- c(late,c(21,22,23,24)+i*24)
+}
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+
+
+
+#Tranmsission and Distribution cost $/kWh
+cost.td <- 0.03
+
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+summary(price.fraction)
+sum(price.fraction)
+
+
+#normalizes price fraction to one and add cost.d
+price.fraction <- price.fraction/sum(price.fraction) 
+
+summary(price.fraction)
+sum(price.fraction)
+
+price.fixed <- sol$objval / demand.annual 
+
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+summary(price.demand)
+mean(price.demand)
+sum(price.demand*demand.kwh)
+price.fixed
+
+
+cost.list <- list()
+solution.list <- list()
+investments.list <- list()
+price.demand.list <- list()
+
+cost.list[[1]] <- sol$objval
+solution.list[[1]] <- solution.df
+investments.list[[1]] <- investments.df
+price.demand.list[[1]] <- price.demand
+
+
+investments.df
+colSums(solution.df)
+
+rm(sol,model,solution.df,investments.df,i,price.fraction,price.fixed)
+
+
+```
+
+
+The R code below models a community. The community decides to invest in community solar or wind based on the time of use utility prices.
+
+```{r}
+#The community model
+
+#nTimePeriods, capacity factors and C1 are the same
+Technologies <- c('Utility','Solar', 'Wind')
+nTechnologies <- length(Technologies)
+cost.td.com <- 0.01
+
+
+#Combines all of the capacity factors multiplied by the Capacity of one unit of technolgy in one vector
+#The utility has enough capacity to power any timeslice, solar is reduced to 500 MW investments, and wind stays 1MW
+capacity.factor.util <- rep((demand.annual*max(demand.kwh)),nTimePeriods)
+
+CF.com <- c(capacity.factor.util[1:nTimePeriods],capacity.factor.solar[1:nTimePeriods]*500,capacity.factor.wind[1:nTimePeriods]*1000)
+
+
+C2a.com <- .sparseDiagonal((nTimePeriods*nTechnologies),1)
+C2b.com <- spMatrix((nTimePeriods*nTechnologies),3,
+                i = c(1:(nTimePeriods*nTechnologies)),
+                j = c(mapply(rep,(1:nTechnologies),nTimePeriods)),
+                x = c(-CF.com)  )
+C2.com <- cbind(C2a.com,C2b.com)
+
+#solar cost is adjusted by half and *2 utility annual cost is removed and the util variable cost is added
+cost.util <- price.demand
+cost.com <- c(cost.util, rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+
+rm(C2b.com,C2a.com)
+```
+
+THe Community model:
+```{r}
+# 3,000,000 kWh per community
+demand.annual <- 3000000
+RHS <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2.com)))
+
+# Build model
+model     <- list()
+#spMatrix tells you where to put the non zero values in matrix i,j is the location and x are teh values for each pair
+model$A   <- rbind(C1,C2.com)
+model$obj         <- cost.com
+
+model$vtype    <- c(rep('C', (nTimePeriods*nTechnologies)), rep('I', 3))
+model$rhs         <- RHS
+model$sense       <- c(rep('>=',nrow(C1)),rep('<=',nrow(C2.com)))
+#model$constrnames <- Categories
+model$modelname   <- 'Community Electric Plan'
+model$modelsense  <- 'min'
+#suppress output
+params <- list(OutputFlag = 0)
+sol <- gurobi(model,params)
+
+print('MIP Solve Status')
+sol$status
+print('Objective Value')
+sol$objval
+
+#rm(C1.com,C2.com,RHS)
+```
+
+
+```{r}
+cost.list.com <- list()
+solution.list.com <- list()
+investments.list.com <- list()
+generation.util.list.com <- list()
+                                                                                                                      
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+                              
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), 
+Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+
+print('Yearly generation met by source and time of day')
+colSums(solution.df.com)
+print('Yearly generation by source')
+c(sum(colSums(solution.df.com[1:6])),sum(colSums(solution.df.com[7:12])),sum(colSums(solution.df.com[13:18])))
+print('Yearly generation by Utility')
+generation.util.com
+print('Excess Electricity Production')
+sum(colSums(solution.df.com))-demand.annual
+print('Investments made [Utility,Solar,Wind]')
+investments.df.com
+
+model.com <- model
+
+solution.list.com[[1]] <- solution.df.com
+investments.list.com[[1]] <- investments.df.com
+generation.util.list.com[[1]] <- generation.util.com
+cost.list.com[[1]] <- sol$objval
+```
+
+Calculated Prices of Community
+
+```{r}
+#Tranmsission and Distribution cost $/kWh for the community model
+
+
+price.fraction.com <-  (demand.kwh*demand.annual)/(investments.df.com[2]*CF[(nTimePeriods+1):(nTimePeriods*2)] +investments.df.com[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+
+
+
+#normalizes price fraction to one and add cost.d
+price.fraction.com <- price.fraction.com/sum(price.fraction.com) 
+
+summary(price.fraction.com)
+sum(price.fraction.com)
+
+price.fixed.com <- sol$objval / demand.annual 
+
+price.demand.com <- price.fraction.com*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+summary(price.demand.com)
+mean(price.demand.com)
+sum(price.demand.com*demand.kwh)
+price.fixed.com
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com,price.demand.com,price.fixed.com,price.fraction.com)
+
+```
+
+```{r}
+#iterations for 1 community
+ncoms <- 1
+
+
+nitrs <- 4
+params <- list(OutputFlag = 0)
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000-unlist(generation.util.list.com))*ncoms/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+ncoms*unlist(cost.list.com) / (3000000*ncoms) 
+
+
+cost.list.1 <- cost.list
+solution.list.1 <- solution.list
+investments.list.1 <- investments.list
+price.demand.list.1 <- price.demand.list
+
+cost.list.com.1 <- cost.list.com
+solution.list.com.1 <- solution.list.com
+investments.list.com.1 <- investments.list.com
+
+
+```
+
+```{r}
+#iterations for 5 communities
+
+ncoms <- 5
+params <- list(OutputFlag = 0)
+
+  
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000-unlist(generation.util.list.com))*ncoms/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+ncoms*unlist(cost.list.com) / (3000000*ncoms) 
+
+
+cost.list.5 <- cost.list
+solution.list.5 <- solution.list
+investments.list.5 <- investments.list
+price.demand.list.5 <- price.demand.list
+
+cost.list.com.5 <- cost.list.com
+solution.list.com.5 <- solution.list.com
+investments.list.com.5 <- investments.list.com
+
+
+```
+
+```{r}
+#iterations for 10 communities
+ncoms <- 10
+
+params <- list(OutputFlag = 0)
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000-unlist(generation.util.list.com))*ncoms/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+ncoms*unlist(cost.list.com) / (3000000*ncoms)
+
+
+cost.list.10 <- cost.list
+solution.list.10 <- solution.list
+investments.list.10 <- investments.list
+price.demand.list.10 <- price.demand.list
+
+cost.list.com.10 <- cost.list.com
+solution.list.com.10 <- solution.list.com
+investments.list.com.10 <- investments.list.com
+
+
+```
+
+```{r}
+#iterations for 20 communities
+ncoms <- 20
+
+params <- list(OutputFlag = 0)
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000-unlist(generation.util.list.com))*ncoms/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+ncoms*unlist(cost.list.com) / (3000000*ncoms)
+
+
+cost.list.20 <- cost.list
+solution.list.20 <- solution.list
+investments.list.20 <- investments.list
+price.demand.list.20 <- price.demand.list
+
+cost.list.com.20 <- cost.list.com
+solution.list.com.20 <- solution.list.com
+investments.list.com.20 <- investments.list.com
+
+
+```
+
+```{r}
+#iterations for 30 communities
+ncoms <- 30
+
+
+params <- list(OutputFlag = 0)
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000-unlist(generation.util.list.com))*ncoms/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+unlist(cost.list.com)*ncoms / (3000000*ncoms)
+
+
+cost.list.30 <- cost.list
+solution.list.30 <- solution.list
+investments.list.30 <- investments.list
+price.demand.list.30 <- price.demand.list
+
+cost.list.com.30 <- cost.list.com
+solution.list.com.30 <- solution.list.com
+investments.list.com.30 <- investments.list.com
+
+
+```
+
+```{r}
+#iterations for 40 communities
+ncoms <- 40
+
+
+params <- list(OutputFlag = 0)
+for(i in 2:nitrs){
+  
+#New utility model with new demand
+
+model <- model.util
+
+demand.annual <- 3000000*(40-ncoms)+ncoms*generation.util.list.com[[(i-1)]]
+
+model$rhs   <- c((demand.annual*demand.kwh[1:nTimePeriods]),rep(0,nrow(C2)))
+
+sol <- gurobi(model, params)
+
+solution.df <- data.frame(NG.early = c(sol$x[early]),NG.morning = c(sol$x[morning]), NG.noon = c(sol$x[noon]), NG.afternoon = c(sol$x[afternoon]), NG.night = c(sol$x[night]),NG.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+
+
+#Tranmsission and Distribution cost $/kWh
+price.fraction <-  (demand.kwh*demand.annual)/(investments.df[1]*CF[1:nTimePeriods]
+                                                 +investments.df[2]*CF[(nTimePeriods+1):(nTimePeriods*2)]
+                                                  +investments.df[3]*CF[(nTimePeriods*2+1):(nTimePeriods*3)])
+
+price.fraction <- price.fraction/sum(price.fraction) 
+price.demand <- price.fraction*sol$objval/(demand.annual*(demand.kwh+0.0000001))
+
+cost.list[[i]] <- sol$objval
+solution.list[[i]] <- solution.df
+investments.list[[i]] <- investments.df
+price.demand.list[[i]] <- price.demand
+
+
+print(paste('Iteration Count:', i))
+
+rm(sol,model,solution.df,investments.df,price.demand,price.fraction)
+
+
+  
+#New community model with new prices
+model <- model.com
+
+model$obj <- c(price.demand.list[[(i)]], rep((cost.variable.Solar+cost.td.com),nTimePeriods), rep((cost.variable.Wind+cost.td.com),nTimePeriods), 0, cost.annual.Solar, cost.annual.Wind)
+sol <- gurobi(model,params)
+
+solution.df.com <- data.frame(Util.early = c(sol$x[early]),Util.morning = c(sol$x[morning]), Util.noon = c(sol$x[noon]), Util.afternoon = c(sol$x[afternoon]), Util.night = c(sol$x[night]),Util.late = c(sol$x[late]), 
+Solar.early = c(sol$x[(early+8760)]), Solar.morning = c(sol$x[(morning+8760)]), Solar.noon = c(sol$x[(noon+8760)]), Solar.afternoon = c(sol$x[(afternoon+8760)]), Solar.night = c(sol$x[(night+8760)]),Solar.late = c(sol$x[(late+8760)]), Wind.early = c(sol$x[(early+8760*2)]), Wind.morning = c(sol$x[(morning+8760*2)]), Wind.noon = c(sol$x[(noon+8760*2)]), Wind.afternoon = c(sol$x[(afternoon+8760*2)]), Wind.night = c(sol$x[(night+8760*2)]),Wind.late = c(sol$x[(late+8760*2)]) )
+
+investments.df.com <- c(sol$x[(nTechnologies*nTimePeriods+1)],sol$x[(nTechnologies*nTimePeriods+2)],sol$x[(nTechnologies*nTimePeriods+3)])
+
+generation.util.com <- sum(colSums(solution.df.com[1:6]))
+
+cost.list.com[[i]] <- sol$objval
+solution.list.com[[i]] <- solution.df.com
+investments.list.com[[i]] <- investments.df.com
+generation.util.list.com[[i]] <- generation.util.com
+
+
+rm(sol,model,solution.df.com,investments.df.com,generation.util.com)
+  
+
+}
+
+
+print('Objective Values for the Utility Models' )
+unlist(cost.list)
+print('Objective Values for the Community Models' )
+unlist(cost.list.com)
+print('Total Cost Utility+Community')
+unlist(cost.list)+unlist(cost.list.com)*ncoms
+print('Utility Prices')
+lapply(price.demand.list,mean)
+print('Utility Investments')
+investments.list
+print('Community Investments')
+investments.list.com
+print('Fraction of Energy Generation by Community')
+(3000000*ncoms-unlist(generation.util.list.com))/(120000000)
+print('Excess Electricity Produced by Community')
+max(0,ncoms*sum(colSums(solution.list.com[[i]]))-(3000000*ncoms))
+print('Mean $/kWh for Community Generation')
+unlist(cost.list.com)*ncoms / (3000000*ncoms)
+
+
+cost.list.40 <- cost.list
+solution.list.40 <- solution.list
+investments.list.40 <- investments.list
+price.demand.list.40 <- price.demand.list
+
+cost.list.com.40 <- cost.list.com
+solution.list.com.40 <- solution.list.com
+investments.list.com.40 <- investments.list.com
+
+
+```
+
+```{r}
+#Create Solution Dataframe
+nitrs <- 4
+#already added to the cost so setting to zero for laziness
+cost.td.com <- 0
+cost.td <- 0
+
+index.ng <- c()
+index.solar <- c()
+index.wind <- c()
+
+
+for(i in 0:23){
+index.ng <- c(index.ng,c(1,2,3,4,5,6)+i*18) 
+index.solar <- c(index.solar,c(7,8,9,10,11,12)+i*18)
+index.wind <- c(index.wind,c(13,14,15,16,17,18)+i*18)
+
+}
+
+production.util <- c((unlist(lapply(solution.list.1,colSums))),(unlist(lapply(solution.list.5,colSums))),(unlist(lapply(solution.list.10,colSums))),(unlist(lapply(solution.list.20,colSums))),(unlist(lapply(solution.list.30,colSums))),(unlist(lapply(solution.list.40,colSums))) )
+
+production.ng.util <- round(production.util[index.ng]/1000000,3)
+production.solar.util <- round(production.util[index.solar]/1000000,3)
+production.wind.util <- round(production.util[index.wind]/1000000,3)
+
+production.com <- c((unlist(lapply(solution.list.com.1,colSums))),(unlist(lapply(solution.list.com.5,colSums))),(unlist(lapply(solution.list.com.10,colSums))),(unlist(lapply(solution.list.com.20,colSums))),(unlist(lapply(solution.list.com.30,colSums))),(unlist(lapply(solution.list.com.40,colSums))) )
+
+production.util.com <- round(production.com[index.ng]/1000000,3)
+production.solar.com <- round(production.com[index.solar]/1000000,3)
+production.wind.com <- round(production.com[index.wind]/1000000,3)
+
+cost.util <- c((unlist(cost.list.1)+cost.td*unlist(lapply(lapply(solution.list.1,colSums),sum))),
+               (unlist(cost.list.5)+cost.td*unlist(lapply(lapply(solution.list.5,colSums),sum))),
+               (unlist(cost.list.10)+cost.td*unlist(lapply(lapply(solution.list.10,colSums),sum))),
+               (unlist(cost.list.20)+cost.td*unlist(lapply(lapply(solution.list.20,colSums),sum))),
+               (unlist(cost.list.30)+cost.td*unlist(lapply(lapply(solution.list.30,colSums),sum))),
+               (unlist(cost.list.40)+cost.td*unlist(lapply(lapply(solution.list.40,colSums),sum))) )
+
+cost.util <- round(cost.util / 1000000,3)
+
+cost.com <- c((unlist(cost.list.com.1)),
+               (unlist(cost.list.com.5)),
+               (unlist(cost.list.com.10)),
+               (unlist(cost.list.com.20)),
+               (unlist(cost.list.com.30)),
+               (unlist(cost.list.com.40)) )
+
+cost.com <- round(cost.com / 1000000,3)
+
+cost.total <- cost.util + c(cost.com[1:nitrs],cost.com[(nitrs+1):(nitrs*2)]*5,cost.com[(nitrs*2+1):(nitrs*3)]*10,cost.com[(nitrs*3+1):(nitrs*4)]*20,cost.com[(nitrs*4+1):(nitrs*5)]*30,cost.com[(nitrs*5+1):(nitrs*6)]*40)
+
+
+price.util <- c(unlist(lapply(price.demand.list.1,mean)),unlist(lapply(price.demand.list.5,mean)),unlist(lapply(price.demand.list.10,mean)),unlist(lapply(price.demand.list.20,mean)),unlist(lapply(price.demand.list.30,mean)),unlist(lapply(price.demand.list.40,mean)))
+
+price.com <- c((unlist(cost.list.com.1)*1 / (3000000*1) + cost.td.com),(unlist(cost.list.com.5)*5 / (3000000*5) + cost.td.com),(unlist(cost.list.com.10)*10 / (3000000*10) + cost.td.com),(unlist(cost.list.com.20)*20 / (3000000*20) + cost.td.com),(unlist(cost.list.com.30)*30 / (3000000*30) + cost.td.com),(unlist(cost.list.com.40)*40 / (3000000*40) + cost.td.com))
+
+investment.ng.util <- c((unlist(lapply(investments.list.1,'[[',1))),(unlist(lapply(investments.list.5,'[[',1))),(unlist(lapply(investments.list.10,'[[',1))),(unlist(lapply(investments.list.20,'[[',1))),(unlist(lapply(investments.list.30,'[[',1))),(unlist(lapply(investments.list.40,'[[',1))) )
+
+investment.solar.util <- c((unlist(lapply(investments.list.1,'[[',2))),(unlist(lapply(investments.list.5,'[[',2))),(unlist(lapply(investments.list.10,'[[',2))),(unlist(lapply(investments.list.20,'[[',2))),(unlist(lapply(investments.list.30,'[[',2))),(unlist(lapply(investments.list.40,'[[',2))) )
+
+investment.wind.util <- c((unlist(lapply(investments.list.1,'[[',3))),(unlist(lapply(investments.list.5,'[[',3))),(unlist(lapply(investments.list.10,'[[',3))),(unlist(lapply(investments.list.20,'[[',3))),(unlist(lapply(investments.list.30,'[[',3))),(unlist(lapply(investments.list.40,'[[',3))) )
+
+investment.solar.com <- c((unlist(lapply(investments.list.com.1,'[[',2))),(unlist(lapply(investments.list.com.5,'[[',2))),(unlist(lapply(investments.list.com.10,'[[',2))),(unlist(lapply(investments.list.com.20,'[[',2))),(unlist(lapply(investments.list.com.30,'[[',2))),(unlist(lapply(investments.list.com.40,'[[',2))) )
+
+investment.solar.com <- round(investment.solar.com)
+
+investment.wind.com <- c((unlist(lapply(investments.list.com.1,'[[',3))),(unlist(lapply(investments.list.com.5,'[[',3))),(unlist(lapply(investments.list.com.10,'[[',3))),(unlist(lapply(investments.list.com.20,'[[',3))),(unlist(lapply(investments.list.com.30,'[[',3))),(unlist(lapply(investments.list.com.40,'[[',3))) )
+
+communities <- c(mapply(rep,c(01,05,10,20,30,40),nitrs))
+communities <- as.factor(communities)
+
+iteration <- rep(c(1:nitrs),6)
+
+
+plotdf <- tibble(communities, iteration, cost.util,cost.com,cost.total,price.util,price.com,investment.ng.util,investment.solar.util,investment.wind.util,investment.solar.com,investment.wind.com)
+
+communities <- c( mapply(rep,c(01,05,10,20,30,40),(6*nitrs)) )
+communities <- as.factor(communities)
+
+iteration <- rep(c( (mapply(rep,c(1:4),(6))) ), 6) 
+
+timeofday <- rep(c('1-4 am','5-8 am','8am - 12pm ','12-4 pm','4-8 pm','8pm - 12am'),24)
+
+plotdf.prod <- tibble(communities,iteration,timeofday,production.ng.util,production.solar.util,production.wind.util,production.util.com,production.solar.com,production.wind.com)
+
+plotdf
+plotdf.prod
+```
+
+```{r}
+#cleanup
+
+rm(afternoon,C2,CF,CF.com,cost.annual.NG,cost.annual.Solar,cost.annual.Wind,cost.com,cost.list,cost.list.com,cost.td,cost.td.com,cost.util,cost.variable.NG,cost.variable.Solar,cost.variable.Wind,early,generation.util.list.com,i,investments.list,investments.list.com,late,model.com,model.util,morning,ncoms,night,noon,nTechnologies,price.demand.list,solution.list,solution.list.com,Technologies,cost,demand.annual)
+```
+
+Organizes the data from all the scenarios and iterations and puts them in tidy format to be used later.
+
+
+
+
+
+
+
+
+
+
+
+

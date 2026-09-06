@@ -1,0 +1,270 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+load("decomp_sol_df.RData")
+```
+
+
+```{r}
+#data frame inputs
+
+timeofdaya <- factor(c('1-4 am','5-8 am','8am - 12pm ','12-4 pm','4-8 pm','8pm - 12am') )
+timeofdaya <- ordered(timeofdaya, levels = c('1-4 am','5-8 am','8am - 12pm ','12-4 pm','4-8 pm','8pm - 12am'))
+timeofday <- rep(timeofdaya,24)
+plotdf.prod$timeofday <- as.factor(timeofday)
+
+plotdf
+plotdf.prod
+timeofdaya
+
+
+```
+
+
+
+
+```{r}
+library(ggthemes)
+
+label.util <- rep('Utility',6)
+label.com <- rep('Community',6)
+mult.factor.com <- c(1,5,10,20,30,40)
+
+plotdf1 <- plotdf %>% filter(iteration == 4) %>% select(communities,cost.util,price.util,cost.total) %>% mutate(cost = cost.util) %>% mutate(price = price.util) %>% mutate(paradigm = label.util) %>% mutate(total.cost = cost.total) %>% select(communities,cost,price,paradigm,total.cost)
+
+plotdf2 <- plotdf %>% filter(iteration == 4) %>% select(communities,cost.com,price.com,cost.total) %>% mutate(cost = cost.com*mult.factor.com) %>% mutate(price = price.com) %>% mutate(paradigm = label.com) %>% mutate(total.cost = cost.total) %>% select(communities,cost,price,paradigm,total.cost)
+
+plotdf1
+plotdf2
+
+plotgraph <- rbind(plotdf1,plotdf2) %>%  arrange(paradigm) %>% mutate(pos.cost = c(11,10.5,11,10.5,10,9.5,2.5,2,2.5,2,2.5,2) )
+
+plotgraph <- add_row(plotgraph, communities = '00', cost = as.numeric(plotdf[1,3]), price = as.numeric(plotdf[1,6]), paradigm = 'Utility', total.cost = as.numeric(plotdf[1,5]), pos.cost = 10   )  
+
+# do not need to add community row for 0 vector
+# plotgraph <- add_row(plotgraph, communities = '0', cost = cost.list.com.1[[1]], price = price.util[1], paradigm = 'Community', pos.cost = 5000000    )  
+
+plotgraph
+        
+
+cost.plot <- plotgraph %>% select(communities,cost,price,paradigm,total.cost) %>% 
+  ggplot(aes(x = communities, y = cost, fill = paradigm))+
+  geom_bar(stat = 'identity')+
+  
+  
+  
+  #cost labels
+  #geom_text(data = plotgraph, aes(x = communities, y = (pos.cost), label = paste0('$',cost) ), size = 4)+
+  geom_text(data = plotgraph, aes(x = communities, y = 14.5, label = paste0('$',total.cost) ), size = 5,color = 'purple', fontface = 'bold.italic')+
+  
+  #price points and labels
+  geom_point(aes(y = price*78.95, shape = paradigm), size = 4)+
+  geom_text(data = plotgraph, aes(x = communities, y = price*78.95, label = paste0('$',format(round(price,3))) ), nudge_y = -1, size = 5)+
+  
+  
+  ylim(0,15)+
+  
+  scale_fill_discrete(name = "")+
+  scale_shape_discrete(name = "")+
+  scale_y_continuous(sec.axis = sec_axis(~.*(1/78.95), name = "Mean Electricity Price ($ / kWh)") )+
+  xlab('Number of Communities Investing in DERs')+
+  ylab('Total Costs ($ / Million)')+
+  ggtitle('The Costs and Mean Prices of DER Invesment')+
+  theme_economist()
+
+
+
+
+
+
+
+cost.plot
+
+plotgraph
+```
+
+
+```{r}
+plotdf.prod
+
+label.util <- rep('Utility',36)
+label.com <- rep('Community',36)
+label.ng <- rep('NG',36)
+label.usolar <- rep('Solar.Utility',36)
+label.uwind <- rep('Wind.Utility',36)
+label.csolar <- rep('Solar.Community',36)
+label.cwind <- rep('Wind.Community',36)
+mult.factor.com <- c(1,5,10,20,30,40)
+
+plotdf.prod.ng <- plotdf.prod %>% filter(iteration == 4) %>% select(communities,timeofday,production.ng.util) %>% mutate(production = production.ng.util) %>% mutate(paradigm = label.util) %>% mutate(source = label.ng ) %>% select(communities,timeofday,source,production,paradigm)
+
+plotdf.prod.usolar <- plotdf.prod  %>% filter(iteration == 4) %>% select(communities,timeofday,production.solar.util) %>% mutate(production = production.solar.util) %>% mutate(paradigm = label.util) %>% mutate(source = label.usolar ) %>% select(communities,timeofday,source,production,paradigm)
+
+plotdf.prod.uwind <- plotdf.prod  %>% filter(iteration == 4) %>% select(communities,timeofday,production.wind.util) %>% mutate(production = production.wind.util) %>% mutate(paradigm = label.util) %>% mutate(source = label.uwind ) %>% select(communities,timeofday,source,production,paradigm)
+
+plotdf.prod.csolar <- plotdf.prod  %>% filter(iteration == 4) %>% select(communities,timeofday,production.solar.com) %>% mutate(production = production.solar.com) %>% mutate(paradigm = label.com) %>% mutate(source = label.csolar ) %>% select(communities,timeofday,source,production,paradigm)
+
+plotdf.prod.cwind <- plotdf.prod  %>% filter(iteration == 4) %>% select(communities,timeofday,production.wind.com) %>% mutate(production = production.wind.com) %>% mutate(paradigm = label.com) %>% mutate(source = label.cwind ) %>% select(communities,timeofday,source,production,paradigm)
+
+plotgraph.prod <- rbind(plotdf.prod.ng,plotdf.prod.usolar,plotdf.prod.uwind,plotdf.prod.csolar,plotdf.prod.cwind)
+
+plotgraph.prod
+  
+plotgraph.prod.agg <- aggregate(plotgraph.prod, by = list(plotgraph.prod$communities,plotgraph.prod$source), FUN = mean)
+
+#Fixing the mean aggregation and mutliplying by the number of communities
+plotgraph.prod.agg$production <- plotgraph.prod.agg$production * c(rep(6,6),(6*c(1,5,10,20,30,40)),rep(6,6),(6*c(1,5,10,20,30,40)),rep(6,6))
+
+plotgraph.prod.agg <- select(plotgraph.prod.agg, Group.1,Group.2,production)
+plotgraph.prod.agg <- as_tibble(plotgraph.prod.agg)
+plotgraph.prod.agg <- rename(plotgraph.prod.agg, Communities = Group.1, Source = Group.2, Production = production)
+
+plotgraph.prod.agg
+
+percents <- plotgraph.prod.agg[c(1:6),c(1,3)]
+percents[2] <- round( (120-percents[2]) /120 * 100, 1)
+
+plotgraph.prod.agg$percents <- rep( pull(percents,Production) ,5)
+
+plotgraph.prod.agg <- add_row(plotgraph.prod.agg, Communities = '00', Source = 'NG', Production = 120  )  
+
+
+plotgraph.prod.agg
+
+
+```
+
+```{r}
+
+
+
+plotgraph.prod.agg
+
+
+prod.plot <- plotgraph.prod.agg %>% 
+  ggplot(aes(x = Communities, y = Production, fill = Source))+
+  geom_bar(stat = 'identity')+
+  
+  #production labels
+  #geom_text(data = plotgraph.prod.agg, aes(x = Communities, y = (Production), label = Production ), size = 4)+
+ 
+  #price points and labels
+  geom_point(data = plotgraph.prod.agg, aes(x = Communities, y = percents*1.25), size = 4)+
+  geom_text(data = plotgraph.prod.agg, aes(x = Communities, y = percents*1.25, label = paste0(percents,'%')), nudge_y = 10, size = 5) +
+  # 
+  # 
+  ylim(0,125)+
+  # 
+  scale_fill_discrete(name = "")+
+  scale_shape_discrete(name = "DER Generation (%)")+
+  scale_y_continuous(sec.axis = sec_axis(~.*(1/1.2), name = "Total Amount Generated by DERs (%)") )+
+  xlab('Number of Communities Investing in DERs')+
+  ylab('Total Production (GWh)')+
+  ggtitle('Total Electricity Production by Source')+
+  theme_economist()
+
+
+prod.plot
+```
+
+```{r}
+plotgraph.prod[109:180,4] <- plotgraph.prod[109:180,4] * rep((c(rep(1,6),rep(5,6),rep(10,6),rep(20,6),rep(30,6),rep(40,6))),2)
+
+plotgraph.prod
+
+prod.plot.facet <- plotgraph.prod %>% 
+  ggplot(aes(x = communities, y = production, fill = source))+
+  geom_bar(stat = 'identity')+
+  
+  #production labels
+  #geom_text(data = plotgraph.prod, aes(x = communities, y = production, label = production, size = 4) )+
+ 
+  ylim(0,30)+
+  # 
+  scale_fill_discrete(name = "")+
+  xlab('Number of Communities Investing in DERs')+
+  ylab('Total Production (GWh)')+
+  ggtitle('Electricity Production by Source and Time of Day')+
+  facet_wrap(~timeofday)+
+  theme_economist()
+
+prod.plot.facet
+```
+
+```{r}
+label.util <- rep('Utility',4)
+label.com <- rep('Community',4)
+mult.factor.com <- 30
+
+plotdf1.itr <- plotdf %>% filter(communities == 30) %>% select(iteration,cost.util,price.util,cost.total) %>% mutate(cost = cost.util) %>% mutate(price = price.util) %>% mutate(paradigm = label.util) %>% mutate(total.cost = cost.total) %>% select(iteration,cost,price,paradigm,total.cost)
+
+plotdf2.itr <- plotdf %>% filter(communities == 30) %>% select(iteration,cost.com,price.com,cost.total) %>% mutate(cost = cost.com*mult.factor.com) %>% mutate(price = price.com) %>% mutate(paradigm = label.com) %>% mutate(total.cost = cost.total) %>% select(iteration,cost,price,paradigm,total.cost)
+
+plotgraph.itr <- rbind(plotdf1.itr,plotdf2.itr) %>%  arrange(paradigm) %>% mutate(pos.cost = c(6.0,6.5,7,7.5,2.5,3,3.5,4) )
+
+cost.plot.itr <- plotgraph.itr %>% select(iteration,cost,paradigm) %>% 
+  ggplot(aes(x = iteration, y = cost, fill = paradigm))+
+  geom_bar(stat = 'identity')+
+  geom_text(data = plotgraph.itr, aes(x = iteration, y = pos.cost, label = paste0('$',format(signif(cost, 3), big.mark=",")) ), size = 4)+
+  scale_fill_discrete(name = "Optimization Problem")+
+  xlab('Number of Communities investing in DERs')+
+  ylab('Total Costs ($ MM)')+
+  ggtitle('Cost of Investing in DERs')+
+  theme_fivethirtyeight()
+
+price.plot.itr <- plotgraph.itr %>% select(iteration,price,paradigm) %>% 
+  ggplot(aes(x = iteration, y = price))+
+  geom_point(aes(color = paradigm), size = 3)+
+  geom_text(data = plotgraph.itr, aes(x = iteration, y = price, label = paste0('$',format(round(price, 3))) ), nudge_x = 0.4)+
+  scale_color_discrete(name = "Optimization Problem")+
+  xlab('Number of Communities investing in DERs')+
+  ylab('Mean Electricity Price ($/kWh)')+
+  ggtitle('Prices for Providing Electricity')+
+  theme_economist()
+
+
+cost.plot.itr
+price.plot.itr
+plotgraph.itr
+```
+
+
+```{r}
+cost.plot
+prod.plot
+prod.plot.facet
+
+ggsave('cost.pdf', cost.plot)
+ggsave('price.pdf',prod.plot)
+ggsave('timeofday.pdf', prod.plot.facet)
+```
+```{r}
+library(gridExtra)
+library(pander)
+
+pdf('table.pdf', height = 11, width = 8.5)
+grid.table(cost.df1)
+dev.off()
+
+pander(cost.df.print)
+
+```
+
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

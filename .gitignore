@@ -1,0 +1,23 @@
+# --- RESTRICTED DATA: Pecan Street licence. See README. ---
+*.xlsx
+*.xls
+*.RData
+*.rdata
+
+# --- credentials ---
+gurobi.lic
+*.lic
+gamslice.txt
+.env
+*_key*
+gurobi.log
+
+# --- Python / R ---
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.Rproj.user/
+.Rhistory
+.Ruserdata
+.ipynb_checkpoints/

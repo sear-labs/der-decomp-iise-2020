@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper."
+title: "der-decomp: distributed energy resource capacity expansion"
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/sear-labs/der-decomp-iise-2020"
+authors:
+  - family-names: Jones
+    given-names: "Erick C."
+    name-suffix: Jr.
+    orcid: "https://orcid.org/0000-0003-0559-4699"
+preferred-citation:
+  type: conference-paper
+  title: "Decomposing systems: illustrating the utility of distributed energy resources with decomposition techniques"
+  collection-title: "Proceedings of the 2020 IISE Annual Conference"
+  year: 2020
+  location:
+    name: "New Orleans, LA"
+  authors:
+    - family-names: Jones
+      given-names: "Erick C."
+      name-suffix: Jr.
