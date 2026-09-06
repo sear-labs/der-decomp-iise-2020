@@ -1,6 +1,10 @@
-# --- RESTRICTED DATA: Pecan Street licence. See README. ---
+# --- input data ---
+# The restricted workbook stays out. The synthetic instance and its fitted
+# parameters are deliberate exceptions - sampled from aggregate parameters,
+# containing no Pecan Street series.
 *.xlsx
 *.xls
+!data/raw/indata-synthetic.xlsx
 *.RData
 *.rdata
 

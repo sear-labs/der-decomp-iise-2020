@@ -11,20 +11,66 @@ of each, to meet an hourly demand profile at least cost — 3 technologies × 8,
 **This paper has no DOI.** IISE Annual Conference proceedings from 2020 were not DOI-registered. That
 is a venue policy, not a comment on the work; the repository is named for the venue and year instead.
 
-## Private, and why
+## A synthetic instance ships, and the model runs without any restricted file
 
-The original reads **Pecan Street** licensed data — demand profiles for 30 single-family homes in the
-Mueller neighbourhood of Austin, plus derived capacity factors. The R source says so itself:
+```bash
+pip install gurobipy openpyxl pytest
+pytest                  # 20 pass, 1 strict xfail (see below)
+```
 
-> `#These files included that are commented out are not included due to licensing requirements from Pecan Street`
+`data/raw/indata-synthetic.xlsx` is sampled from fitted aggregate parameters, not perturbed from the
+originals, so it reproduces no Pecan Street series. `scripts/make_synthetic_inputs.py` regenerates it
+deterministically; `data/raw/fitted_parameters.json` holds the fit.
 
-**That exclusion was incomplete.** The commented-out loads were removed, but `indata1.xlsx` — which is
-read by the live code path, `read_excel(filename, sheet='Demand_kWh')` — was not. This repository
-therefore ships **no data at all**: `*.xlsx` and `*.RData` are gitignored, and that was verified with
-`git check-ignore` rather than assumed.
+**It gives the same answer as the real data** - objective 10,749,243.92 and the same investment
+decision, to the cent. That is a real result but a weak test on its own, because the optimum here is
+insensitive to most of the series (see below).
 
-Whether the derived `.RData` objects are redistributable is a question for Pecan Street. Until it is
-answered, this stays private.
+Two properties of the real data are preserved deliberately, and both matter:
+
+| Property | Real | Synthetic |
+|---|---|---|
+| Solar mean capacity factor (after the model's adjustment) | 0.26656 | 0.26277 |
+| Wind mean capacity factor | 0.36677 | 0.36768 |
+| Fraction of solar hours below the night threshold | 44.8% | 43.9% |
+
+The paper states 0.266 and 0.366, so the **loader is verified against the published table**, not just
+against the R source. The night fraction is the one that needed work: a single lognormal matched the
+mean and put 1% of hours in darkness instead of 45%. Solar is bimodal, so the generator uses a
+two-component mixture.
+
+## What this port does NOT do, and why
+
+`src/der_decomp/model.py` implements the **utility** model only. The paper is a *decomposition* - a
+utility model and a community model solved alternately, exchanging demand and price until they agree
+- and DER investment happens on the community side.
+
+That is structural, not a tuning problem. At the paper's own cost parameters:
+
+| | all-in cost |
+|---|---|
+| NG | **$0.0652 / kWh** |
+| Solar | $0.0763 / kWh |
+| Wind | $0.0840 / kWh |
+
+A utility minimising cost builds natural gas and nothing else, which is exactly what this model does.
+The paper reports DER shares from 1.8% to 86.7%, reached through community investment at *retail*
+prices of $0.057-$0.153/kWh. `tests/test_reproduces_paper.py` carries that as a strict xfail rather
+than a comment, so it announces itself the moment the community model lands.
+
+`r-original/Utility Linking.Rmd` contains the whole thing - both models, and the iterations for
+1/10/20/30/40 communities, across 14 solver calls. Porting it is the remaining work.
+
+## On the underlying data
+
+The paper states its sources in print: *"the hourly electricity demand profile from a subset of 30
+houses in the Mueller neighborhood in Austin, TX via Pecan Street Inc., Dataport"*, plus ERCOT, EIA
+and NREL. Per the author, that data was already de-identified and was available to academics on
+request at the time; the paywall came later.
+
+The original workbook is **not distributed here** - `.gitignore` admits only the synthetic instance
+and blocks every other spreadsheet. It lives outside version control at
+`University of Texas at Austin\Research\Restricted Data (Pecan Street)\`.
 
 ## What is here
 
