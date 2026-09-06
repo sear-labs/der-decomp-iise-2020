@@ -75,35 +75,24 @@ and blocks every other spreadsheet. It lives outside version control at
 ## What is here
 
 ```
-src/der_decomp/model.py   Python/gurobipy port. Takes data as arguments; reads no file.
-tests/test_model.py       16 structural tests. Green.
-tests/test_reproduces_paper.py   Reproduction against the published figures. RED.
-r-original/               the original R implementation, unmodified
-figures/                  published figures (cost, price, table, time-of-day)
+src/der_decomp/model.py           the utility model; takes data as arguments, reads no file
+src/der_decomp/data.py            loads a workbook into 8760-hour arrays, mirroring the R
+scripts/make_synthetic_inputs.py  fits the generator and samples an instance
+data/raw/                         the synthetic instance and its fitted parameters
+tests/test_model.py               16 structural tests, green
+tests/test_reproduces_paper.py    4 green + 1 strict xfail (the community model)
+r-original/                       the original R, unmodified - both models and the iteration
+figures/                          the paper's result figures
 ```
 
-## The port, and what "verified" means for it
+**The model takes its data as arguments and never reads a file.** That was the design consequence of
+the licence problem, and it is why the model could be tested at all before a synthetic instance
+existed. `data.py` is the only thing that touches a workbook.
 
-`src/der_decomp/model.py` is a port of `r-original/Utility Linking.Rmd`, which built the constraint
-matrix by hand with `spMatrix` and called Gurobi's R interface.
-
-**It takes its data as arguments and never reads a file.** That is the design consequence of the
-licence problem: a model that reads `indata1.xlsx` cannot be tested by anyone who does not have
-`indata1.xlsx`. A model that accepts a demand profile and capacity factors can be tested by anyone.
-
-So the 16 tests in `tests/test_model.py` verify what can be verified without the restricted data, and
-each case is small enough to check by hand:
-
-- the annuity arithmetic against a closed-form value, and its degenerate cases
-- model dimensions against the formulation
-- a single-hour, single-technology instance whose optimal cost is computed by hand
-- demand met in every hour; generation never above installed capacity
-- investment integral when asked, and the relaxation a lower bound on the integer solution
-- infeasibility when nothing is available
-- cheaper solar capex never reduces solar investment
-
-**None of that reproduces the paper.** `tests/test_reproduces_paper.py` is the test that would, and it
-is red, because the data it needs cannot be distributed.
+The 16 structural tests check what is checkable by hand: annuity arithmetic against closed form, model
+dimensions against the formulation, a single-hour instance whose optimum is computed by hand, demand
+met every hour, generation never above installed capacity, integrality, the relaxation as a lower
+bound, infeasibility when nothing is available, and monotonicity in capex.
 
 ### One faithfulness note
 
@@ -112,16 +101,10 @@ the unit size rather than a unit conversion. Both solar numerators are zero, so 
 affects the answer and **the published results are unaffected**. The port reproduces the arithmetic
 term for term, with the quirk documented at the call site rather than silently corrected.
 
-## Running it
+### Solver
 
-```bash
-pip install gurobipy pytest
-pytest tests/test_model.py        # green
-pytest                            # includes the red reproduction test
-```
-
-At ~35,040 × 26,283 the full instance **exceeds Gurobi's size-limited licence** and needs a full one.
-The test instances are tiny and run under any licence.
+At 35,040 × 26,283 the full instance **exceeds Gurobi's size-limited licence** and needs a full one.
+The structural test instances are tiny and run under any licence.
 
 ## How to cite
 
